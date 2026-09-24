@@ -1,0 +1,484 @@
+\documentclass[12pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish,es-nodecimaldot]{babel}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage[a4paper,margin=2.5cm]{geometry}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{IEEEtrantools}
+\usepackage{cite}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{xcolor}
+\usepackage{enumitem}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!50!black,
+  citecolor=blue!50!black,
+  urlcolor=blue!50!black,
+  pdftitle={Documentación de Credit Simulator},
+  pdfauthor={Joselyn Redroban}
+}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.45em}
+\renewcommand{\arraystretch}{1.2}
+
+\title{\textbf{Credit Simulator}\\
+\large Documentación técnica y académica del proyecto}
+\author{Joselyn Redroban}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Este documento describe el proyecto Credit Simulator, una aplicación web para
+simular créditos y consultar sus tablas de amortización. Se documentan el
+propósito, la arquitectura de microservicios, el frontend, los endpoints, la
+autenticación con JSON Web Tokens (JWT), la persistencia en PostgreSQL, los
+métodos de amortización francés y alemán, el flujo de uso y la infraestructura
+Docker Compose. También se registran decisiones de diseño, riesgos, ausencia
+de pruebas automatizadas visibles y recomendaciones de mejora. La descripción
+se basa en el código y los archivos de configuración del repositorio, por lo
+que no se atribuyen al sistema capacidades que no estén implementadas.
+\end{abstract}
+
+\textbf{Palabras clave:} simulación de crédito, microservicios, amortización,
+JWT, PostgreSQL, ASP.NET Core, React, Docker
+
+\begin{otherlanguage}{english}
+\begin{abstract}
+This document presents the Credit Simulator project, a web application for
+credit simulation and amortization-table consultation. It describes the
+microservice architecture, frontend, HTTP endpoints, JWT authentication,
+PostgreSQL persistence, French and German amortization methods, usage flow,
+Docker Compose infrastructure, and configuration. It also records design
+decisions, limitations, security risks, and recommendations. The account is
+based on the repository implementation and deliberately avoids claiming
+features or measured results that are not present in the project.
+\end{abstract}
+\end{otherlanguage}
+
+\tableofcontents
+\newpage
+
+\section{Introducción}
+
+Credit Simulator permite que una persona registrada explore el costo de un
+crédito antes de tomar una decisión. El usuario elige un tipo de crédito,
+ingresa el monto y el plazo, selecciona el método de amortización y obtiene
+una tabla con cuota, interés, abono a capital y saldo. Además, la aplicación
+guarda las simulaciones asociadas al usuario y permite consultar el historial y
+descargar el resultado en CSV desde el backend o en PDF desde el frontend.
+
+El proyecto es especialmente útil como ejercicio de integración entre una
+interfaz web, APIs independientes, persistencia relacional y cálculos
+financieros. Sin embargo, debe entenderse como un simulador educativo y no
+como un motor bancario: no se observan comisiones, seguros, impuestos,
+calendarios de días reales, tasas variables ni validaciones regulatorias.
+
+\section{Propósito y alcance}
+
+\subsection{Objetivo}
+
+El objetivo es ofrecer una experiencia sencilla para:
+\begin{enumerate}[label=\arabic*.]
+  \item registrar usuarios e iniciar sesión;
+  \item consultar un catálogo de tipos de crédito con tasa anual;
+  \item calcular y comparar amortización francesa y alemana;
+  \item conservar las simulaciones y sus cuotas;
+  \item revisar el historial privado y exportar un resultado.
+\end{enumerate}
+
+\subsection{Alcance comprobado}
+
+El repositorio contiene tres servicios ASP.NET Core sobre .NET 8, un frontend
+React con Vite, scripts SQL de inicialización, Dockerfiles y una composición
+Docker. El catálogo incluye cinco registros semilla: Personal, Hipotecario,
+Vehicular, Educativo y PyME. El plazo aceptado por la solicitud de simulación
+es de 1 a 600 meses y el monto debe ser positivo.
+
+No se encontró una carpeta de pruebas unitarias o de integración ni proyectos
+de pruebas en el árbol revisado. El README registra validaciones manuales
+realizadas durante el desarrollo, pero esas comprobaciones no sustituyen una
+suite reproducible dentro del repositorio. Esta diferencia es importante para
+interpretar cualquier afirmación de calidad.
+
+\section{Arquitectura general}
+
+\subsection{Vista lógica}
+
+La solución aplica separación por responsabilidad y por almacenamiento. Auth
+Service administra usuarios y tokens; Credit Catalog Service administra los
+tipos de crédito; Simulation Service consulta el catálogo, calcula y persiste
+las simulaciones. El navegador consume los servicios mediante Axios.
+
+\begin{figure}[H]
+\centering
+\fbox{\begin{minipage}{0.92\textwidth}
+\centering
+\textbf{Frontend React/Nginx}\\[0.3em]
+\(\downarrow\) autenticación, catálogo y simulaciones por HTTP\\[0.3em]
+\begin{tabular}{c@{\qquad}c@{\qquad}c}
+\textbf{Auth Service} & \textbf{Credit Catalog Service} &
+\textbf{Simulation Service}\\
+\(\downarrow\) & \(\downarrow\) & \(\downarrow\)\\
+\texttt{auth\_db} & \texttt{credit\_catalog\_db} &
+\texttt{simulation\_db}
+\end{tabular}\\[0.4em]
+Simulation Service \(\longrightarrow\) Credit Catalog Service por HTTP
+\end{minipage}}
+\caption{Diagrama lógico simplificado, construido sin archivos externos.}
+\label{fig:arquitectura}
+\end{figure}
+
+Cada servicio posee su propia base de datos. En consecuencia, no existen
+claves foráneas cruzadas entre usuarios, catálogo y simulaciones. Simulation
+Service guarda el identificador del usuario y toma una copia del nombre y la
+tasa del crédito usados en el momento de la simulación. Esta decisión reduce
+la dependencia de lecturas posteriores del catálogo, aunque deja la
+consistencia referencial entre servicios bajo responsabilidad de la
+aplicación.
+
+\subsection{Comunicación}
+
+El frontend usa por defecto los puertos locales 5001, 5002 y 5003 para las
+APIs. Dentro de Docker, Simulation Service usa la URL interna
+\texttt{http://credit-catalog-service:8080}. El catálogo se consulta mediante
+\texttt{CreditCatalogClient}; el servicio de simulación no accede directamente
+a las tablas del catálogo.
+
+\section{Componentes del sistema}
+
+\subsection{Auth Service}
+
+Expone registro e inicio de sesión. El correo se normaliza a minúsculas y se
+recorta; la contraseña se almacena como hash BCrypt, no como texto plano.
+Cuando las credenciales son válidas se genera un JWT con identificador,
+nombre y correo del usuario, emisor, audiencia y una expiración configurada de
+60 minutos por defecto. La tabla \texttt{users} incluye una restricción única
+para el correo.
+
+\subsection{Credit Catalog Service}
+
+Expone el catálogo de forma de solo lectura. La respuesta contiene identificador,
+nombre, descripción y tasa anual. La semilla SQL define tasas positivas para
+cinco tipos de crédito. El servicio no implementa en el código revisado
+operaciones administrativas para crear o modificar el catálogo.
+
+\subsection{Simulation Service}
+
+Es el componente central del caso de uso. Requiere autenticación JWT,
+valida la solicitud mediante anotaciones de datos, consulta el tipo de crédito,
+selecciona el calculador según el método, genera las cuotas, calcula totales y
+guarda la cabecera junto con sus cuotas. Las consultas de historial y detalle
+filtran por el identificador del usuario autenticado; por eso una simulación
+de otro usuario se presenta como no encontrada.
+
+\subsection{Frontend}
+
+El frontend está construido con React 18, React Router, Axios, Vite y jsPDF.
+Incluye páginas de registro, login, simulador, historial y detalle. El
+\texttt{AuthContext} conserva el token y los datos del usuario en
+\texttt{localStorage}; un interceptor de Axios añade el encabezado
+\texttt{Authorization: Bearer <token>}. La ruta privada impide mostrar las
+pantallas principales a una sesión no autenticada.
+
+El PDF se construye en el navegador con jsPDF. El CSV se solicita al endpoint
+del backend como un archivo binario. Esta división es práctica, pero produce
+dos implementaciones de exportación que podrían divergir en formato o
+localización.
+
+\section{Endpoints y flujo de datos}
+
+\small
+\begin{longtable}{>{\ttfamily}p{0.22\textwidth}p{0.18\textwidth}p{0.48\textwidth}}
+\caption{Endpoints observados en los controladores.}\label{tab:endpoints}\\
+\hline
+\normalfont Método y ruta & \normalfont Servicio & \normalfont Función\\
+\hline
+\endfirsthead
+\hline
+\normalfont Método y ruta & \normalfont Servicio & \normalfont Función\\
+\hline
+\endhead
+\textnormal{POST }/api/auth/register & Auth & Registra un usuario y devuelve JWT.\\
+\textnormal{POST }/api/auth/login & Auth & Verifica BCrypt y devuelve JWT.\\
+\textnormal{GET }/api/credit-types & Catálogo & Devuelve los tipos de crédito.\\
+\textnormal{POST }/api/simulations & Simulación & Crea y persiste una simulación autenticada.\\
+\textnormal{GET }/api/simulations & Simulación & Lista el historial del usuario autenticado.\\
+\textnormal{GET }/api/simulations/\{id\} & Simulación & Obtiene el detalle propio.\\
+\textnormal{GET }/api/simulations/\{id\}/export & Simulación & Descarga el reporte CSV propio.\\
+\hline
+\end{longtable}
+\normalsize
+
+El flujo normal es: (1) registro o login; (2) almacenamiento local del token;
+(3) carga del catálogo; (4) envío de monto, plazo, tipo y método; (5)
+validación y consulta de la tasa; (6) cálculo y persistencia; (7) presentación
+de la tabla; y (8) navegación al detalle, historial o exportación. El
+frontend muestra la primera cuota como resumen, mientras que el detalle
+presenta todas las cuotas.
+
+\section{Modelo de persistencia}
+
+La base \texttt{auth\_db} contiene \texttt{users(id, nombre, email,
+password\_hash, created\_at)}. La base \texttt{credit\_catalog\_db} contiene
+\texttt{credit\_types(id, nombre, descripcion, tasa\_anual)}. La base
+\texttt{simulation\_db} contiene \texttt{simulations} e
+\texttt{installments}; la segunda tiene una clave foránea hacia la primera
+con borrado en cascada.
+
+\begin{table}[H]
+\centering
+\caption{Datos históricos conservados en una simulación.}
+\label{tab:persistencia}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.28\textwidth}p{0.58\textwidth}}
+\hline
+\textbf{Campo} & \textbf{Razón de conservación}\\
+\hline
+\texttt{usuario\_id} & Filtrar historial y propiedad del recurso.\\
+\texttt{credit\_type\_id} & Identificar el registro de catálogo usado.\\
+\texttt{tipo\_credito} & Conservar el nombre aunque el catálogo cambie.\\
+\texttt{tasa\_anual} & Reproducir la tasa aplicada en el pasado.\\
+\texttt{monto}, \texttt{plazo\_meses}, \texttt{metodo} & Reproducir los parámetros de entrada.\\
+\texttt{total\_intereses}, \texttt{total\_pagado} & Mostrar agregados sin recalcular la tabla.\\
+\hline
+\end{tabular}
+\end{table}
+
+Los índices declarados para usuario y simulación apoyan las consultas de
+historial y de cuotas. La ausencia de una relación SQL entre
+\texttt{usuario\_id} y \texttt{auth\_db.users} es coherente con la separación
+de bases, pero permite que un identificador huérfano exista si se eliminara
+un usuario por fuera del servicio. Un sistema productivo requeriría una
+política explícita para ese caso.
+
+\section{Métodos de amortización}
+
+\subsection{Convenciones}
+
+Sea \(P\) el principal, \(n\) el número de meses, \(r\) la tasa mensual y
+\(B_k\) el saldo después de la cuota \(k\). El código interpreta la tasa
+recibida como porcentaje anual y calcula
+\begin{equation}
+r = \frac{\text{tasa anual}}{100\cdot 12}.
+\label{eq:tasa}
+\end{equation}
+Los importes se redondean a dos decimales con redondeo ``away from zero''. La
+última cuota ajusta el capital al saldo restante, lo que hace que el saldo
+final sea \(0.00\) bajo el algoritmo implementado.
+
+\subsection{Sistema francés}
+
+En el método francés la cuota teórica es constante:
+\begin{equation}
+C = \frac{P r}{1-(1+r)^{-n}}, \qquad r\ne 0.
+\label{eq:frances}
+\end{equation}
+Para \(r=0\), el código utiliza \(C=P/n\). En cada periodo se calcula
+\begin{align}
+I_k &= \operatorname{round}(B_{k-1}r),\\
+A_k &= \operatorname{round}(C-I_k),\\
+B_k &= \operatorname{round}(B_{k-1}-A_k).
+\end{align}
+La implementación redondea la cuota, el interés, el capital y el saldo en
+cada iteración. Por ello, la cuota puede variar en centavos, especialmente
+en la última fila, aunque el comportamiento esperado sea aproximadamente
+constante.
+
+\subsection{Sistema alemán}
+
+En el método alemán el abono a capital es aproximadamente constante:
+\begin{equation}
+A = \operatorname{round}\left(\frac{P}{n}\right).
+\label{eq:aleman}
+\end{equation}
+La cuota disminuye porque el interés se calcula sobre un saldo cada vez menor:
+\begin{align}
+I_k &= \operatorname{round}(B_{k-1}r),\\
+C_k &= \operatorname{round}(A+I_k),\\
+B_k &= \operatorname{round}(B_{k-1}-A_k).
+\end{align}
+El último abono también se reemplaza por el saldo restante. Esta estrategia
+evita saldos residuales, pero significa que el valor exacto del abono puede
+variar en la última cuota por efecto del redondeo.
+
+\subsection{Decisiones discutibles del cálculo}
+
+La tasa anual se convierte a tasa mensual nominal mediante división entre
+12; no se documenta una conversión efectiva anual. Esa elección es razonable
+para un prototipo, pero debe hacerse explícita al comparar resultados con una
+entidad financiera. Además, el proyecto calcula sobre meses uniformes y no
+considera fechas de vencimiento, días transcurridos, mora, seguros o
+comisiones. Por tanto, una tabla correcta según estas fórmulas no equivale a
+una liquidación bancaria.
+
+\section{Infraestructura y configuración}
+
+Docker Compose levanta PostgreSQL 17 Alpine, los tres servicios .NET, el
+frontend con Nginx y pgAdmin. PostgreSQL ejecuta los scripts de
+\texttt{infrastructure/postgres/init} la primera vez que se crea el volumen.
+Los volúmenes \texttt{postgres\_data} y \texttt{pgadmin\_data} conservan
+datos y configuración.
+
+\begin{table}[H]
+\centering
+\caption{Puertos publicados por la composición.}
+\label{tab:puertos}
+\begin{tabular}{lll}
+\hline
+\textbf{Componente} & \textbf{Puerto} & \textbf{Uso}\\
+\hline
+Frontend & 8080 & Aplicación web\\
+Auth Service & 5001 & API y Swagger\\
+Credit Catalog Service & 5002 & API y Swagger\\
+Simulation Service & 5003 & API y Swagger\\
+PostgreSQL & 5432 & Desarrollo local\\
+pgAdmin & 5050 & Administración de PostgreSQL\\
+\hline
+\end{tabular}
+\end{table}
+
+El arranque documentado es:
+\begin{verbatim}
+docker compose -f infrastructure/docker-compose.yml up -d --build
+\end{verbatim}
+Las variables \texttt{VITE\_AUTH\_API\_URL},
+\texttt{VITE\_CATALOG\_API\_URL} y
+\texttt{VITE\_SIMULATION\_API\_URL} permiten cambiar las URLs del frontend.
+El entorno de Compose mostrado contiene credenciales de desarrollo y una
+clave JWT explícita. Es una configuración conveniente para una demostración,
+pero no debe trasladarse a producción.
+
+\section{Seguridad}
+
+Hay varias medidas positivas: BCrypt para contraseñas, JWT con validación de
+firma, emisor, audiencia y expiración, autorización en el controlador de
+simulaciones y filtros por usuario en las consultas. También se valida el
+método y se acotan monto y plazo en el DTO.
+
+El principal riesgo visible es de configuración. La clave JWT de desarrollo y
+las credenciales de PostgreSQL/pgAdmin aparecen en archivos del proyecto o en
+la composición. Aunque pueden ser datos deliberadamente didácticos, deben
+reemplazarse por secretos gestionados y rotables. También se permite CORS
+desde cualquier origen en los servicios. Para producción convendría restringir
+orígenes, usar HTTPS, separar secretos por entorno, revisar políticas de
+registro de errores, añadir límites de tasa y definir una estrategia para
+revocar o renovar tokens.
+
+Guardar el JWT en \texttt{localStorage} simplifica el frontend, pero aumenta
+el impacto de una vulnerabilidad XSS. Una alternativa sería una cookie
+HttpOnly, Secure y SameSite, acompañada de una defensa CSRF apropiada. Esta es
+una mejora arquitectónica, no una funcionalidad actualmente implementada.
+
+\section{Pruebas y validación}
+
+El repositorio no incluye proyectos de pruebas automatizadas ni scripts de
+CI visibles. En consecuencia, no se puede afirmar cobertura de código ni
+regresión automática. El README sí enumera comprobaciones manuales de
+PostgreSQL, catálogo, registro, login, simulación francesa, historial, CSV,
+compilación de Vite y levantamiento de Compose. Esas comprobaciones son útiles
+como evidencia de desarrollo, pero deberían convertirse en pruebas
+reproducibles.
+
+Una estrategia mínima recomendada sería:
+\begin{enumerate}[label=\arabic*.]
+  \item pruebas unitarias para las fórmulas, tasa cero, redondeo y saldo final;
+  \item pruebas de API para credenciales inválidas, métodos inválidos y
+  aislamiento entre usuarios;
+  \item pruebas de integración con PostgreSQL efímero;
+  \item una prueba de frontend para login, ruta privada y exportaciones;
+  \item un flujo de CI que ejecute restauración, compilación y pruebas.
+\end{enumerate}
+
+\section{Fortalezas, debilidades y recomendaciones}
+
+\begin{table}[H]
+\centering
+\caption{Evaluación crítica del estado actual.}
+\label{tab:evaluacion}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.25\textwidth}
+>{\raggedright\arraybackslash}p{0.29\textwidth}
+>{\raggedright\arraybackslash}p{0.29\textwidth}}
+\hline
+\textbf{Área} & \textbf{Fortaleza} & \textbf{Debilidad o mejora}\\
+\hline
+Arquitectura & Responsabilidades y bases separadas. &
+Mayor complejidad operativa y consistencia distribuida.\\
+Cálculo & Fórmulas claras y ajuste del saldo final. &
+Sin comisiones, fechas reales ni tasa efectiva.\\
+Seguridad & BCrypt, JWT y aislamiento por usuario. &
+Secretos de desarrollo, CORS abierto y token en almacenamiento local.\\
+Persistencia & Snapshot de nombre y tasa histórica. &
+Sin integridad referencial entre bases.\\
+Frontend & Flujo simple y exportación CSV/PDF. &
+Dos formatos mantenidos por capas diferentes.\\
+Calidad & Validaciones de entrada y Swagger en desarrollo. &
+No hay pruebas automatizadas visibles ni CI comprobable.\\
+\hline
+\end{tabular}
+\end{table}
+
+Las mejoras con mayor retorno serían parametrizar secretos por entorno,
+restringir CORS, añadir pruebas de calculadores y API, documentar con precisión
+la convención de tasa, y unificar la generación de reportes. Después podrían
+incorporarse observabilidad, reintentos y timeouts explícitos para la llamada
+al catálogo, versionado de API y migraciones formales en lugar de depender
+solo de scripts de inicialización.
+
+\section{Conclusiones}
+
+Credit Simulator cumple una función educativa completa de extremo a extremo:
+una interfaz React solicita datos, los microservicios aplican autenticación,
+el catálogo entrega una tasa, Simulation Service calcula y guarda una tabla, y
+la persona puede consultar o exportar el resultado. La separación de
+servicios y bases hace visible una arquitectura escalable, aunque también
+introduce decisiones de consistencia y despliegue que no aparecen en una
+aplicación monolítica.
+
+La implementación es un punto de partida sólido para una demostración
+académica. Sus límites principales son la configuración de desarrollo
+expuesta, la política CORS amplia, la falta de pruebas automatizadas visibles
+y el alcance financiero simplificado. Estas limitaciones no invalidan el
+simulador, pero sí deben comunicarse antes de interpretar sus resultados como
+ofertas o liquidaciones reales.
+
+\begin{thebibliography}{9}
+
+\bibitem{aspnet}
+Microsoft, ``ASP.NET Core documentation,'' 2024. [En línea].
+Disponible: \url{https://learn.microsoft.com/aspnet/core/}
+
+\bibitem{jwt}
+M. Jones, J. Bradley y N. Sakimura, ``JSON Web Token (JWT),'' RFC 7519,
+Internet Engineering Task Force, 2015. [En línea].
+Disponible: \url{https://www.rfc-editor.org/rfc/rfc7519}
+
+\bibitem{postgres}
+The PostgreSQL Global Development Group, ``PostgreSQL documentation,'' 2024.
+[En línea]. Disponible: \url{https://www.postgresql.org/docs/}
+
+\bibitem{docker}
+Docker, ``Docker Compose documentation,'' 2024. [En línea].
+Disponible: \url{https://docs.docker.com/compose/}
+
+\bibitem{react}
+Meta Open Source, ``React documentation,'' 2024. [En línea].
+Disponible: \url{https://react.dev/}
+
+\bibitem{repo}
+J. Redroban, ``Credit Simulator,'' repositorio del proyecto, 2026.
+
+\end{thebibliography}
+
+\end{document}
