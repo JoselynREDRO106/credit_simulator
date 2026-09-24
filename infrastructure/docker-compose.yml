@@ -1,10 +1,10 @@
 # ============================================================
-# docker-compose.yml — Credit Simulator (Fase 1: solo PostgreSQL)
+# docker-compose.yml — Credit Simulator
 # Las bases de datos se inicializan automáticamente con los
 # scripts de postgres/init/ la PRIMERA vez que se crea el volumen.
 #
 # Uso:
-#   docker compose up -d          (levantar)
+#   docker compose up -d --build  (levantar todo)
 #   docker compose down           (apagar, conserva datos)
 #   docker compose down -v        (apagar y BORRAR los datos)
 # ============================================================
@@ -29,5 +29,79 @@ services:
       timeout: 5s
       retries: 5
 
+  auth-service:
+    build: ../services/auth-service
+    container_name: credit-auth-service
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__AuthDatabase: Host=postgres;Port=5432;Database=auth_db;Username=creditadmin;Password=creditpass
+      Jwt__Key: credit-simulator-development-key-change-in-production-2026
+      Jwt__Issuer: credit-simulator-auth
+      Jwt__Audience: credit-simulator-client
+    ports:
+      - "5001:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  credit-catalog-service:
+    build: ../services/credit-catalog-service
+    container_name: credit-catalog-service
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__CatalogDatabase: Host=postgres;Port=5432;Database=credit_catalog_db;Username=creditadmin;Password=creditpass
+    ports:
+      - "5002:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  simulation-service:
+    build: ../services/simulation-service
+    container_name: credit-simulation-service
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__SimulationDatabase: Host=postgres;Port=5432;Database=simulation_db;Username=creditadmin;Password=creditpass
+      Services__CreditCatalogUrl: http://credit-catalog-service:8080
+      Jwt__Key: credit-simulator-development-key-change-in-production-2026
+      Jwt__Issuer: credit-simulator-auth
+      Jwt__Audience: credit-simulator-client
+    ports:
+      - "5003:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      credit-catalog-service:
+        condition: service_started
+
+  frontend:
+    build: ../frontend/credit-web
+    container_name: credit-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - auth-service
+      - credit-catalog-service
+      - simulation-service
+
+  pgadmin:
+    image: dpage/pgadmin4:9
+    container_name: credit-pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@creditsimulator.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   postgres_data:                        # persiste los datos aunque apagues el contenedor
+  pgadmin_data:                          # persiste la configuración de pgAdmin
