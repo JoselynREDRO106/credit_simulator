@@ -1,0 +1,33 @@
+# ============================================================
+# docker-compose.yml — Credit Simulator (Fase 1: solo PostgreSQL)
+# Las bases de datos se inicializan automáticamente con los
+# scripts de postgres/init/ la PRIMERA vez que se crea el volumen.
+#
+# Uso:
+#   docker compose up -d          (levantar)
+#   docker compose down           (apagar, conserva datos)
+#   docker compose down -v        (apagar y BORRAR los datos)
+# ============================================================
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: credit-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: creditadmin        # superusuario
+      POSTGRES_PASSWORD: creditpass
+      POSTGRES_DB: postgres             # BD por defecto (solo para conexión inicial)
+    ports:
+      - "5432:5432"                     # accesible desde tu PC con DBeaver/psql
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U creditadmin -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:                        # persiste los datos aunque apagues el contenedor
